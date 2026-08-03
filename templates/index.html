@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>マルチトラック音声エディタ</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <h1>🎚️ マルチトラック音声エディタ</h1>
+    <div class="toolbar">
+      <label class="file-btn">
+        + ファイルを追加
+        <input type="file" id="fileInput" accept="audio/*" multiple hidden>
+      </label>
+      <button id="playBtn" class="btn">▶ 再生</button>
+      <button id="stopBtn" class="btn">■ 停止</button>
+      <button id="cutBtn" class="btn" title="選択中のクリップを再生位置でカット">✂ カット</button>
+      <button id="deleteBtn" class="btn" title="選択中のクリップを削除">🗑 削除</button>
+      <span class="spacer"></span>
+      <select id="formatSelect" class="select">
+        <option value="wav">WAV</option>
+        <option value="mp3">MP3</option>
+      </select>
+      <button id="exportBtn" class="btn primary">⬇ 書き出し(結合)</button>
+    </div>
+  </header>
+
+  <div id="status" class="status"></div>
+
+  <main class="editor">
+    <div class="ruler-wrap">
+      <div class="track-labels-spacer"></div>
+      <div id="ruler" class="ruler"></div>
+    </div>
+    <div id="tracksContainer" class="tracks-container">
+      <div class="empty-hint" id="emptyHint">
+        「+ ファイルを追加」から音声ファイルを選ぶと、ここに新しいトラックが追加されます。<br>
+        クリップはドラッグで移動、端をドラッグでトリミング、再生ヘッド位置で「カット」できます。
+      </div>
+    </div>
+  </main>
+
+  <audio id="hiddenAudio" hidden></audio>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
