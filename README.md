@@ -15,7 +15,7 @@
    - Windows: https://ffmpeg.org/download.html からダウンロードし、PATHに追加してください。
 3. 依存パッケージをインストール:
    ```bash
-   cd audio_editor
+   cd "プロジェクトのカレントディレクトリ"
    pip install -r requirements.txt
    ```
 4. サーバーを起動:
