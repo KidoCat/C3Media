@@ -319,11 +319,40 @@ function seekFromClientX(clientX, referenceEl) {
   const rect = referenceEl.getBoundingClientRect();
   const x = clientX - rect.left;
   state.playheadSec = Math.max(0, x / PX_PER_SEC);
-  renderAll();
+  renderPlayheadOnly();
 }
 
-el.ruler.addEventListener("click", (e) => seekFromClientX(e.clientX, el.ruler));
+// ドラッグ中はクリップを再構築せず、再生ヘッドの位置だけ動かす(軽量・無段階)
+function renderPlayheadOnly() {
+  const playheadEl = document.getElementById("playheadEl");
+  if (playheadEl) {
+    playheadEl.style.left = `${LABEL_WIDTH + state.playheadSec * PX_PER_SEC}px`;
+  }
+}
 
+// ルーラーを押しながら動かす(スクラブ)ことで無段階に再生ヘッドを移動できるようにする
+function attachScrub(referenceEl) {
+  referenceEl.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    if (state.isPlaying) {
+      stopPlayback();
+      state._playStartSec = undefined;
+    }
+    seekFromClientX(e.clientX, referenceEl);
+
+    function onMove(ev) {
+      seekFromClientX(ev.clientX, referenceEl);
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
+attachScrub(el.ruler);
 // ---------- 再生 / 停止 ----------
 
 function stopPlayback() {
