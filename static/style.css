@@ -36,6 +36,21 @@ body {
   white-space: nowrap;
 }
 
+.time-counter {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.time-counter .current {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .toolbar {
   display: flex;
   align-items: center;

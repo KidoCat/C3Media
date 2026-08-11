@@ -29,6 +29,8 @@ const el = {
   deleteBtn: document.getElementById("deleteBtn"),
   exportBtn: document.getElementById("exportBtn"),
   formatSelect: document.getElementById("formatSelect"),
+  currentTimeLabel: document.getElementById("currentTimeLabel"),
+  totalTimeLabel: document.getElementById("totalTimeLabel"),
 };
 
 function setStatus(msg, isError = false) {
@@ -99,6 +101,25 @@ function timelineTotalDuration() {
   return maxT + 15;
 }
 
+// 実際の音声コンテンツの長さ(最後のクリップの終端)。ルーラー表示用の余白は含まない。
+function contentDurationSec() {
+  let maxT = 0;
+  for (const track of state.tracks) {
+    for (const clip of track.clips) {
+      const end = clip.timelineStart + (clip.trimEnd - clip.trimStart);
+      if (end > maxT) maxT = end;
+    }
+  }
+  return maxT;
+}
+
+// 画面上部の「現在位置 / 合計時間」表示を更新する
+function updateTimeDisplay(currentSec) {
+  const cur = currentSec !== undefined ? currentSec : state.playheadSec;
+  el.currentTimeLabel.textContent = fmtTime(cur);
+  el.totalTimeLabel.textContent = fmtTime(contentDurationSec());
+}
+
 function renderRuler() {
   const total = timelineTotalDuration();
   el.ruler.innerHTML = "";
@@ -115,6 +136,7 @@ function renderRuler() {
 function renderAll() {
   el.emptyHint.style.display = state.tracks.length === 0 ? "block" : "none";
   renderRuler();
+  updateTimeDisplay();
 
   // 既存の track-row / playhead を削除して再構築
   el.tracksContainer.querySelectorAll(".track-row, .playhead").forEach((n) => n.remove());
@@ -328,6 +350,7 @@ function renderPlayheadOnly() {
   if (playheadEl) {
     playheadEl.style.left = `${LABEL_WIDTH + state.playheadSec * PX_PER_SEC}px`;
   }
+  updateTimeDisplay(state.playheadSec);
 }
 
 // ルーラーを押しながら動かす(スクラブ)ことで無段階に再生ヘッドを移動できるようにする
@@ -393,14 +416,27 @@ el.playBtn.addEventListener("click", () => {
         audioEl.currentTime = clip.trimStart + (startPlayhead - clipStartT);
         audioEl.play();
         anyScheduled = true;
+
+        // クリップの終端(trimEnd)に達したら停止する（カット後の余分な再生を防ぐ）
+        const remainingMs = (clipEndT - startPlayhead) * 1000;
+        const stopTimerId = setTimeout(() => {
+          audioEl.pause();
+        }, remainingMs);
+        state.playTimers.push(stopTimerId);
       } else {
         // 未来に開始 -> setTimeoutで予約
         const waitMs = (clipStartT - startPlayhead) * 1000;
-        const timerId = setTimeout(() => {
+        const startTimerId = setTimeout(() => {
           audioEl.currentTime = clip.trimStart;
           audioEl.play();
+
+          // クリップの終端(trimEnd)に達したら停止する（カット後の余分な再生を防ぐ）
+          const stopTimerId = setTimeout(() => {
+            audioEl.pause();
+          }, dur * 1000);
+          state.playTimers.push(stopTimerId);
         }, waitMs);
-        state.playTimers.push(timerId);
+        state.playTimers.push(startTimerId);
         anyScheduled = true;
       }
     }
@@ -424,6 +460,7 @@ function tickPlayhead() {
   if (playheadEl) {
     playheadEl.style.left = `${LABEL_WIDTH + nowSec * PX_PER_SEC}px`;
   }
+  updateTimeDisplay(nowSec);
   state.rafId = requestAnimationFrame(tickPlayhead);
 }
 
