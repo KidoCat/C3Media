@@ -1,0 +1,4 @@
+/exports/*
+!/exports/.gitkeep
+/uploads/*
+!/uploads/.gitkeep
