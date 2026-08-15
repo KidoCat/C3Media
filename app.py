@@ -108,6 +108,9 @@ def delete_upload(file_id):
 def delete_all_uploads():
     count = 0
     for name in os.listdir(UPLOAD_DIR):
+        if name == ".gitkeep":
+            continue
+
         path = os.path.join(UPLOAD_DIR, name)
         if os.path.isfile(path):
             os.remove(path)
