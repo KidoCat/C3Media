@@ -8,10 +8,11 @@ const state = {
   selectedClipId: null,
   playheadSec: 0,
   isPlaying: false,
-  audioEls: {},      // clipId -> <audio> (再生用に動的生成)
-  playTimers: [],
+  bufferCache: {},     // fileId -> Promise<AudioBuffer> (デコード済み音声データ、クリップ間で共有)
+  activeSources: [],   // 再生中のAudioBufferSourceNode一覧
   rafId: null,
-  playStartWallClock: 0,
+  playStartCtxTime: 0, // 再生開始時のAudioContext.currentTime
+  _playStartSec: 0,    // 再生開始時点のタイムライン上の秒数
 };
 
 let clipCounter = 0;
@@ -43,6 +44,35 @@ function fmtTime(sec) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// ---------- 音声再生エンジン(Web Audio API) ----------
+// <audio>要素 + setTimeoutでの再生は、シーク・再生開始のタイミングに数十ms単位の
+// 誤差やゆらぎが出やすく、カットした境目で音が途切れたり重なったりする原因になる。
+// Web Audio APIでバッファを直接スケジューリングし、カット前後のクリップをサンプル
+// 単位の精度でつなぐことで、境目のノイズを解消する。
+
+let audioContext = null;
+
+function getAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioContext.state === "suspended") {
+    audioContext.resume();
+  }
+  return audioContext;
+}
+
+// 同じ音声ファイルはクリップ(カット後の断片含む)間でデコード結果を共有し、
+// 再生のたびに毎回フェッチ・デコードし直さないようにする
+function loadBuffer(fileId, url) {
+  if (!state.bufferCache[fileId]) {
+    state.bufferCache[fileId] = fetch(url)
+      .then((res) => res.arrayBuffer())
+      .then((arrayBuffer) => getAudioContext().decodeAudioData(arrayBuffer));
+  }
+  return state.bufferCache[fileId];
 }
 
 // ---------- アップロード ----------
@@ -82,6 +112,7 @@ async function uploadFile(file) {
       trackId,
     };
     state.tracks.push({ trackId, label: data.filename, clips: [clip] });
+    loadBuffer(clip.fileId, clip.url).catch(() => {}); // 再生に備えて先にデコードしておく
     setStatus(`追加しました: ${file.name}`);
   } catch (err) {
     setStatus(`通信エラー: ${err}`, true);
@@ -359,7 +390,6 @@ function attachScrub(referenceEl) {
     e.preventDefault();
     if (state.isPlaying) {
       stopPlayback();
-      state._playStartSec = undefined;
     }
     seekFromClientX(e.clientX, referenceEl);
 
@@ -380,73 +410,73 @@ attachScrub(el.ruler);
 
 function stopPlayback() {
   state.isPlaying = false;
-  state.playTimers.forEach((id) => clearTimeout(id));
-  state.playTimers = [];
-  Object.values(state.audioEls).forEach((a) => {
-    a.pause();
+  state.activeSources.forEach((source) => {
+    try {
+      source.stop();
+    } catch (e) {
+      // 既に再生を終えたノードのstop()はエラーになるだけなので無視してよい
+    }
   });
+  state.activeSources = [];
   if (state.rafId) cancelAnimationFrame(state.rafId);
   state.rafId = null;
 }
 
-el.playBtn.addEventListener("click", () => {
+el.playBtn.addEventListener("click", async () => {
   stopPlayback();
+  const ctx = getAudioContext();
   state.isPlaying = true;
   const startPlayhead = state.playheadSec;
-  state.playStartWallClock = performance.now();
-  state._playStartSec = startPlayhead;
 
-  let anyScheduled = false;
-
+  // 再生対象のクリップを先に洗い出す
+  const targets = [];
   for (const track of state.tracks) {
     for (const clip of track.clips) {
       const dur = clip.trimEnd - clip.trimStart;
       const clipStartT = clip.timelineStart;
       const clipEndT = clip.timelineStart + dur;
       if (clipEndT <= startPlayhead) continue; // 既に終わっている
-
-      if (!state.audioEls[clip.clipId]) {
-        const a = new Audio(clip.url);
-        state.audioEls[clip.clipId] = a;
-      }
-      const audioEl = state.audioEls[clip.clipId];
-
-      if (clipStartT <= startPlayhead) {
-        // 再生ヘッドがクリップの途中にある -> 即再生
-        audioEl.currentTime = clip.trimStart + (startPlayhead - clipStartT);
-        audioEl.play();
-        anyScheduled = true;
-
-        // クリップの終端(trimEnd)に達したら停止する（カット後の余分な再生を防ぐ）
-        const remainingMs = (clipEndT - startPlayhead) * 1000;
-        const stopTimerId = setTimeout(() => {
-          audioEl.pause();
-        }, remainingMs);
-        state.playTimers.push(stopTimerId);
-      } else {
-        // 未来に開始 -> setTimeoutで予約
-        const waitMs = (clipStartT - startPlayhead) * 1000;
-        const startTimerId = setTimeout(() => {
-          audioEl.currentTime = clip.trimStart;
-          audioEl.play();
-
-          // クリップの終端(trimEnd)に達したら停止する（カット後の余分な再生を防ぐ）
-          const stopTimerId = setTimeout(() => {
-            audioEl.pause();
-          }, dur * 1000);
-          state.playTimers.push(stopTimerId);
-        }, waitMs);
-        state.playTimers.push(startTimerId);
-        anyScheduled = true;
-      }
+      targets.push({ clip, clipStartT, clipEndT });
     }
   }
 
-  if (!anyScheduled) {
+  if (targets.length === 0) {
     setStatus("再生できるクリップがありません", true);
     state.isPlaying = false;
     return;
   }
+
+  // 全クリップの音声データを先に確保してから、まとめて同じ基準時刻でスケジュールする。
+  // バラバラにawaitすると、クリップごとの再生開始タイミングがズレてカットした
+  // 境目にノイズが生じるため。
+  let buffers;
+  try {
+    buffers = await Promise.all(targets.map((t) => loadBuffer(t.clip.fileId, t.clip.url)));
+  } catch (err) {
+    setStatus(`音声の読み込みに失敗しました: ${err}`, true);
+    state.isPlaying = false;
+    return;
+  }
+
+  if (!state.isPlaying) return; // 読み込み待ちの間に停止/再クリックされていたら何もしない
+
+  // 少し先の時刻を共通の基準にすることで、全クリップをサンプル単位でぴったり同期させる
+  const baseWhen = ctx.currentTime + 0.05;
+  state.playStartCtxTime = baseWhen;
+  state._playStartSec = startPlayhead;
+
+  targets.forEach(({ clip, clipStartT, clipEndT }, i) => {
+    const source = ctx.createBufferSource();
+    source.buffer = buffers[i];
+    source.connect(ctx.destination);
+
+    const offsetIntoClip = clip.trimStart + Math.max(0, startPlayhead - clipStartT);
+    const startDelay = Math.max(0, clipStartT - startPlayhead);
+    const playDuration = clipEndT - Math.max(clipStartT, startPlayhead);
+
+    source.start(baseWhen + startDelay, offsetIntoClip, playDuration);
+    state.activeSources.push(source);
+  });
 
   setStatus("再生中...");
   tickPlayhead();
@@ -454,7 +484,7 @@ el.playBtn.addEventListener("click", () => {
 
 function tickPlayhead() {
   if (!state.isPlaying) return;
-  const elapsed = (performance.now() - state.playStartWallClock) / 1000;
+  const elapsed = Math.max(0, getAudioContext().currentTime - state.playStartCtxTime);
   const nowSec = state._playStartSec + elapsed;
   const playheadEl = document.getElementById("playheadEl");
   if (playheadEl) {
@@ -465,12 +495,11 @@ function tickPlayhead() {
 }
 
 el.stopBtn.addEventListener("click", () => {
-  if (state.isPlaying && state._playStartSec !== undefined) {
-    const elapsed = (performance.now() - state.playStartWallClock) / 1000;
+  if (state.isPlaying) {
+    const elapsed = Math.max(0, getAudioContext().currentTime - state.playStartCtxTime);
     state.playheadSec = state._playStartSec + elapsed;
   }
   stopPlayback();
-  state._playStartSec = undefined;
   setStatus("停止しました");
   renderAll();
 });
