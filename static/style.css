@@ -169,11 +169,35 @@ body {
   color: var(--text-dim);
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   background: var(--panel);
   border-right: 1px solid var(--border);
   overflow: hidden;
+}
+
+.track-label-text {
+  overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  flex: 1;
+}
+
+.track-delete-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.track-delete-btn:hover {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.1);
 }
 
 .track-lane {

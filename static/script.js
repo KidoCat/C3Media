@@ -28,6 +28,7 @@ const el = {
   stopBtn: document.getElementById("stopBtn"),
   cutBtn: document.getElementById("cutBtn"),
   deleteBtn: document.getElementById("deleteBtn"),
+  clearUploadsBtn: document.getElementById("clearUploadsBtn"),
   exportBtn: document.getElementById("exportBtn"),
   formatSelect: document.getElementById("formatSelect"),
   currentTimeLabel: document.getElementById("currentTimeLabel"),
@@ -180,7 +181,23 @@ function renderAll() {
 
     const label = document.createElement("div");
     label.className = "track-label";
-    label.textContent = track.label;
+
+    const labelText = document.createElement("span");
+    labelText.className = "track-label-text";
+    labelText.textContent = track.label;
+    labelText.title = track.label;
+    label.appendChild(labelText);
+
+    const trackDeleteBtn = document.createElement("button");
+    trackDeleteBtn.className = "track-delete-btn";
+    trackDeleteBtn.title = "この音源ファイルをサーバーから削除";
+    trackDeleteBtn.textContent = "🗑";
+    trackDeleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteTrackFile(track);
+    });
+    label.appendChild(trackDeleteBtn);
+
     row.appendChild(label);
 
     const lane = document.createElement("div");
@@ -364,6 +381,62 @@ el.deleteBtn.addEventListener("click", () => {
   }
   state.selectedClipId = null;
   renderAll();
+});
+
+// トラック1つ分の音源ファイルをサーバーから削除し、タイムラインからも取り除く
+async function deleteTrackFile(track) {
+  const fileId = track.clips[0]?.fileId;
+
+  if (fileId) {
+    if (!confirm(`「${track.label}」をサーバーから完全に削除します。よろしいですか?`)) {
+      return;
+    }
+    setStatus(`削除中: ${track.label} ...`);
+    try {
+      const res = await fetch(`/api/uploads/${fileId}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus(`エラー: ${data.error || "削除に失敗しました"}`, true);
+        return;
+      }
+    } catch (err) {
+      setStatus(`通信エラー: ${err}`, true);
+      return;
+    }
+    delete state.bufferCache[fileId];
+  }
+
+  if (track.clips.some((c) => c.clipId === state.selectedClipId)) {
+    state.selectedClipId = null;
+  }
+  state.tracks = state.tracks.filter((t) => t.trackId !== track.trackId);
+
+  setStatus(`削除しました: ${track.label}`);
+  renderAll();
+}
+
+// サーバーに保存されている音源ファイルを(前回セッション分も含めて)まとめて削除する
+el.clearUploadsBtn.addEventListener("click", async () => {
+  if (!confirm("サーバーに保存されている音源ファイルを全て削除します。よろしいですか?\n(現在編集中のタイムラインも空になります)")) {
+    return;
+  }
+  setStatus("音源を全削除中...");
+  try {
+    const res = await fetch("/api/uploads", { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setStatus(`エラー: ${data.error || "削除に失敗しました"}`, true);
+      return;
+    }
+    stopPlayback();
+    state.tracks = [];
+    state.selectedClipId = null;
+    state.bufferCache = {};
+    setStatus(`削除しました(${data.deleted ?? 0}件)`);
+    renderAll();
+  } catch (err) {
+    setStatus(`通信エラー: ${err}`, true);
+  }
 });
 
 // ---------- 再生ヘッド / シーク ----------

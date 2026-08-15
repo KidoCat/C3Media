@@ -91,6 +91,30 @@ def serve_export(filename):
     return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
 
 
+@app.route("/api/uploads/<file_id>", methods=["DELETE"])
+def delete_upload(file_id):
+    deleted = False
+    for name in os.listdir(UPLOAD_DIR):
+        if name.rsplit(".", 1)[0] == file_id:
+            os.remove(os.path.join(UPLOAD_DIR, name))
+            deleted = True
+            break
+    if not deleted:
+        return jsonify({"error": "ファイルが見つかりません"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/uploads", methods=["DELETE"])
+def delete_all_uploads():
+    count = 0
+    for name in os.listdir(UPLOAD_DIR):
+        path = os.path.join(UPLOAD_DIR, name)
+        if os.path.isfile(path):
+            os.remove(path)
+            count += 1
+    return jsonify({"ok": True, "deleted": count})
+
+
 @app.route("/api/export", methods=["POST"])
 def export():
     """
