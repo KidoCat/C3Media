@@ -118,8 +118,7 @@ def export():
     if not clips:
         return jsonify({"error": "クリップがありません"}), 400
 
-    segments = []
-    total_end_ms = 0
+    loaded = []  # [(timeline_start_ms, clip_audio), ...] トリム済み・サンプリングレート未統一のクリップ
 
     for c in clips:
         file_id = c.get("fileId")
@@ -140,13 +139,25 @@ def export():
         clip_audio = audio[trim_start_ms:trim_end_ms]
 
         timeline_start_ms = max(0, int(float(c.get("timelineStart", 0)) * 1000))
-        segments.append((timeline_start_ms, clip_audio))
-        total_end_ms = max(total_end_ms, timeline_start_ms + len(clip_audio))
+        loaded.append((timeline_start_ms, clip_audio))
 
-    if not segments:
+    if not loaded:
         return jsonify({"error": "有効なクリップがありません"}), 400
 
-    mix = AudioSegment.silent(duration=total_end_ms)
+    # ---- サンプリングレートの統一 ----
+    # 各クリップの元ファイルはサンプリングレートがバラバラな場合がある。統一しないまま
+    # overlay()を繰り返すと、pydubが重ね合わせのたびに暗黙的・段階的にリサンプリングし、
+    # クリップの並び順次第で音質が変わってしまう。ここで明示的に単一のターゲットレート
+    # （今回のクリップ群のうち最大の値）へ揃えてからミックスすることで、不要なダウン
+    # サンプリングを避けつつ一貫した音質にする。
+    target_frame_rate = max(clip_audio.frame_rate for _, clip_audio in loaded)
+    segments = [
+        (start_ms, clip_audio.set_frame_rate(target_frame_rate))
+        for start_ms, clip_audio in loaded
+    ]
+    total_end_ms = max(start_ms + len(clip_audio) for start_ms, clip_audio in segments)
+
+    mix = AudioSegment.silent(duration=total_end_ms, frame_rate=target_frame_rate)
     for start_ms, clip_audio in segments:
         mix = mix.overlay(clip_audio, position=start_ms)
 
