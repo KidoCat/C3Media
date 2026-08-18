@@ -91,6 +91,15 @@ def serve_export(filename):
     return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
 
 
+@app.route("/api/exports/<filename>", methods=["DELETE"])
+def delete_export(filename):
+    for name in os.listdir(EXPORT_DIR):
+        if name == filename:
+            os.remove(os.path.join(EXPORT_DIR, name))
+            return jsonify({"ok": True})
+    return jsonify({"error": "ファイルが見つかりません"}), 404
+
+
 @app.route("/api/uploads/<file_id>", methods=["DELETE"])
 def delete_upload(file_id):
     deleted = False
@@ -108,9 +117,6 @@ def delete_upload(file_id):
 def delete_all_uploads():
     count = 0
     for name in os.listdir(UPLOAD_DIR):
-        if name == ".gitkeep":
-            continue
-
         path = os.path.join(UPLOAD_DIR, name)
         if os.path.isfile(path):
             os.remove(path)

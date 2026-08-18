@@ -596,27 +596,74 @@ el.exportBtn.addEventListener("click", async () => {
     setStatus("書き出すクリップがありません", true);
     return;
   }
+
+  const fmt = el.formatSelect.value;
+
+  // 対応ブラウザ(Chrome/Edgeなど)では、実際にミックスダウンする前に保存先を選んでもらう。
+  // ここでキャンセルされた場合はサーバー側での処理自体を行わない。
+  // 非対応ブラウザ(Firefox/Safariなど)では従来通りブラウザのダウンロード機能にお任せする。
+  let saveHandle = null;
+  if (window.showSaveFilePicker) {
+    try {
+      saveHandle = await window.showSaveFilePicker({
+        suggestedName: `mix.${fmt}`,
+        types: [
+          {
+            description: fmt === "mp3" ? "MP3音声" : "WAV音声",
+            accept: { [fmt === "mp3" ? "audio/mpeg" : "audio/wav"]: [`.${fmt}`] },
+          },
+        ],
+      });
+    } catch (err) {
+      if (err.name === "AbortError") {
+        setStatus("書き出しをキャンセルしました");
+      } else {
+        setStatus(`保存先の選択に失敗しました: ${err}`, true);
+      }
+      return;
+    }
+  }
+
   setStatus("書き出し中...");
   try {
     const res = await fetch("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clips, format: el.formatSelect.value }),
+      body: JSON.stringify({ clips, format: fmt }),
     });
     const data = await res.json();
     if (!res.ok) {
       setStatus(`エラー: ${data.error || "書き出しに失敗しました"}`, true);
       return;
     }
-    setStatus("書き出し完了。ダウンロードを開始します。");
-    const a = document.createElement("a");
-    a.href = data.url;
-    a.download = data.filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+
+    // サーバー上の書き出し結果をこちらで完全に取得してから保存する。
+    // (保存方法によらず、取得が終わった時点でサーバー側の一時ファイルを削除できるようにするため)
+    const blob = await (await fetch(data.url)).blob();
+
+    if (saveHandle) {
+      const writable = await saveHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      setStatus("書き出し完了。指定した保存先に保存しました。");
+    } else {
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = data.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+      setStatus("書き出し完了。ダウンロードを開始します。");
+    }
+
+    // ダウンロード(取得)が完了したので、サーバー上に溜まっていく書き出しファイルは削除しておく
+    fetch(`/api/exports/${encodeURIComponent(data.filename)}`, { method: "DELETE" }).catch((err) => {
+      console.warn("書き出しファイルのサーバー側削除に失敗しました", err);
+    });
   } catch (err) {
-    setStatus(`通信エラー: ${err}`, true);
+    setStatus(`書き出しに失敗しました: ${err}`, true);
   }
 });
 
