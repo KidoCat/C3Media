@@ -220,6 +220,12 @@ function renderAll() {
   playhead.className = "playhead";
   playhead.id = "playheadEl";
   playhead.style.left = `${LABEL_WIDTH + state.playheadSec * PX_PER_SEC}px`;
+
+  const handle = document.createElement("div");
+  handle.className = "playhead-handle";
+  playhead.appendChild(handle);
+  attachScrub(handle, el.ruler); // つまみ(丸)からもスクラブできるようにする。座標計算はルーラー基準。
+
   el.tracksContainer.appendChild(playhead);
 }
 
@@ -457,10 +463,13 @@ function renderPlayheadOnly() {
   updateTimeDisplay(state.playheadSec);
 }
 
-// ルーラーを押しながら動かす(スクラブ)ことで無段階に再生ヘッドを移動できるようにする
-function attachScrub(referenceEl) {
-  referenceEl.addEventListener("mousedown", (e) => {
+// ルーラー、または再生ヘッドのつまみを押しながら動かす(スクラブ)ことで
+// 無段階に再生ヘッドを移動できるようにする。
+// triggerEl: mousedownを検知する要素 / referenceEl: 座標(秒)計算の基準にする要素
+function attachScrub(triggerEl, referenceEl = triggerEl) {
+  triggerEl.addEventListener("mousedown", (e) => {
     e.preventDefault();
+    e.stopPropagation();
     if (state.isPlaying) {
       stopPlayback();
     }
