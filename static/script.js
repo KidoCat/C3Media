@@ -2,6 +2,8 @@
 
 const PX_PER_SEC = 60; // style.css の --px-per-sec と揃える
 const LABEL_WIDTH = 150;
+const GRID_SNAP_SEC = 1; // グリッドスナップの間隔(秒)。track-laneの背景の縦線(1秒間隔)と揃えている
+const SNAP_PX_THRESHOLD = 8; // スナップが効く距離(px)。PX_PER_SECで秒に換算して使う
 
 const state = {
   tracks: [],       // [{trackId, label, clips: [clip, ...]}]
@@ -271,6 +273,42 @@ function findClip(clipId) {
   return null;
 }
 
+// ---------- スナップ(自動吸着) ----------
+// クリップの移動・トリミング時に、きりのいい秒数(1秒刻みのグリッド)や、
+// 他のクリップの端(特にカットでできた前後のパート)に近づいたら自動でぴったり合わせる。
+
+// 指定クリップ以外の、全トラック上のクリップの開始・終了位置をスナップ候補として集める
+function collectSnapCandidates(excludeClipId) {
+  const candidates = [];
+  for (const track of state.tracks) {
+    for (const clip of track.clips) {
+      if (clip.clipId === excludeClipId) continue;
+      candidates.push(clip.timelineStart);
+      candidates.push(clip.timelineStart + (clip.trimEnd - clip.trimStart));
+    }
+  }
+  return candidates;
+}
+
+// targetに最も近いスナップ候補(グリッド or 他クリップの端)への補正量(秒)を返す。
+// しきい値内に候補が無ければnullを返す。
+function bestSnapDelta(target, edgeCandidates) {
+  const thresholdSec = SNAP_PX_THRESHOLD / PX_PER_SEC;
+  const candidates = edgeCandidates.concat([Math.round(target / GRID_SNAP_SEC) * GRID_SNAP_SEC]);
+
+  let best = null;
+  let bestDist = thresholdSec;
+  for (const c of candidates) {
+    if (c < 0) continue; // タイムラインは0秒以降のみ
+    const dist = Math.abs(c - target);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = c - target;
+    }
+  }
+  return best;
+}
+
 // ---------- ドラッグ移動 ----------
 
 function attachDrag(clipEl, clip) {
@@ -281,11 +319,24 @@ function attachDrag(clipEl, clip) {
     state.selectedClipId = clip.clipId;
     const startX = e.clientX;
     const startTimelineStart = clip.timelineStart;
+    const dur = clip.trimEnd - clip.trimStart;
+    const snapCandidates = collectSnapCandidates(clip.clipId);
 
     function onMove(ev) {
       const dx = ev.clientX - startX;
       const deltaSec = dx / PX_PER_SEC;
-      clip.timelineStart = Math.max(0, startTimelineStart + deltaSec);
+      let newStart = Math.max(0, startTimelineStart + deltaSec);
+
+      // クリップの開始端・終了端のどちらか近い方をスナップさせる
+      const startDelta = bestSnapDelta(newStart, snapCandidates);
+      const endDelta = bestSnapDelta(newStart + dur, snapCandidates);
+      if (startDelta !== null && (endDelta === null || Math.abs(startDelta) <= Math.abs(endDelta))) {
+        newStart += startDelta;
+      } else if (endDelta !== null) {
+        newStart += endDelta;
+      }
+
+      clip.timelineStart = Math.max(0, newStart);
       clipEl.style.left = `${clip.timelineStart * PX_PER_SEC}px`;
     }
     function onUp() {
@@ -309,6 +360,7 @@ function attachResize(handleEl, clip, side) {
     const startTrimStart = clip.trimStart;
     const startTrimEnd = clip.trimEnd;
     const startTimelineStart = clip.timelineStart;
+    const snapCandidates = collectSnapCandidates(clip.clipId);
 
     function onMove(ev) {
       const dx = ev.clientX - startX;
@@ -317,12 +369,35 @@ function attachResize(handleEl, clip, side) {
       if (side === "left") {
         let newTrimStart = startTrimStart + deltaSec;
         newTrimStart = Math.max(0, Math.min(newTrimStart, startTrimEnd - 0.05));
-        const actualDelta = newTrimStart - startTrimStart;
+        let actualDelta = newTrimStart - startTrimStart;
+        let newTimelineStart = Math.max(0, startTimelineStart + actualDelta);
+
+        // 左端(タイムライン上の開始位置)をスナップさせ、trimStartも整合を取り直す
+        const snapDelta = bestSnapDelta(newTimelineStart, snapCandidates);
+        if (snapDelta !== null) {
+          newTimelineStart += snapDelta;
+          actualDelta = newTimelineStart - startTimelineStart;
+          newTrimStart = Math.max(0, Math.min(startTrimStart + actualDelta, startTrimEnd - 0.05));
+          actualDelta = newTrimStart - startTrimStart;
+          newTimelineStart = Math.max(0, startTimelineStart + actualDelta);
+        }
+
         clip.trimStart = newTrimStart;
-        clip.timelineStart = Math.max(0, startTimelineStart + actualDelta);
+        clip.timelineStart = newTimelineStart;
       } else {
         let newTrimEnd = startTrimEnd + deltaSec;
         newTrimEnd = Math.min(clip.srcDuration, Math.max(newTrimEnd, startTrimStart + 0.05));
+
+        // 右端(タイムライン上の終了位置)をスナップさせ、trimEndへ逆算する
+        const newEndOnTimeline = clip.timelineStart + (newTrimEnd - clip.trimStart);
+        const snapDelta = bestSnapDelta(newEndOnTimeline, snapCandidates);
+        if (snapDelta !== null) {
+          const snappedEndOnTimeline = newEndOnTimeline + snapDelta;
+          let snappedTrimEnd = clip.trimStart + (snappedEndOnTimeline - clip.timelineStart);
+          snappedTrimEnd = Math.min(clip.srcDuration, Math.max(snappedTrimEnd, startTrimStart + 0.05));
+          newTrimEnd = snappedTrimEnd;
+        }
+
         clip.trimEnd = newTrimEnd;
       }
       renderAll();
@@ -450,7 +525,16 @@ el.clearUploadsBtn.addEventListener("click", async () => {
 function seekFromClientX(clientX, referenceEl) {
   const rect = referenceEl.getBoundingClientRect();
   const x = clientX - rect.left;
-  state.playheadSec = Math.max(0, x / PX_PER_SEC);
+  let sec = Math.max(0, x / PX_PER_SEC);
+
+  // グリッド(1秒刻み)や他クリップの端(カットでできた前後のパートなど)に近ければスナップさせる。
+  // 「カット」は再生ヘッドの位置で行われるため、これによりカット位置もぴったり合わせられる。
+  const snapDelta = bestSnapDelta(sec, collectSnapCandidates());
+  if (snapDelta !== null) {
+    sec = Math.max(0, sec + snapDelta);
+  }
+
+  state.playheadSec = sec;
   renderPlayheadOnly();
 }
 
